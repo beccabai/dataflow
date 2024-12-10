@@ -2,6 +2,9 @@ import numpy as np
 import json
 import subprocess
 import numpy as np
+import os
+import ray
+import yaml
 
 def download_model_from_hf(model_name, model_cache_dir):
     print(f"Downloading {model_name} to {model_cache_dir}.")
@@ -69,7 +72,7 @@ def recursive_len(scores: dict):
             return recursive_len(v)
         elif isinstance(v, np.ndarray):
             return v.shape[0]
-        elif isinstance(v, list):
+        elif isinstance(v, list): 
             return len(v)
         else:
             raise ValueError(f"Invalid scores type {type(v)} returned")
@@ -144,44 +147,73 @@ def new_get_scorer(scorer_name, model_args):
     from dataflow.utils.registry import MODEL_REGISTRY
     print(scorer_name, model_args)
     scorer = MODEL_REGISTRY.get(scorer_name)(args_dict=model_args)
-    
     assert scorer is not None, f"Scorer for {scorer_name} is not found."
     return scorer
 
-def calculate_score(save_path=None):
+
+def map_output_path(input_path, output_dir):
+    """
+    Map an input file path to its corresponding output path.
+    Args:
+        input_path: str, input file path
+        output_dir: str, directory for output files
+    Returns:
+        str, output file path
+    """
+    base_name = os.path.basename(input_path)  # Get the file name
+    output_file = os.path.join(output_dir, base_name.replace(".jsonl.gz", "_output.json"))
+    return output_file
+
+@ray.remote(num_cpus=16, num_gpus=1, max_retries=5, retry_exceptions=True)
+def calculate_score(paths_list= [], output_dir = None, cfg = None):
     from ..config import new_init_config
     from dataflow.utils.registry import FORMATTER_REGISTRY
     from dataflow.core import ScoreRecord
 
-    cfg = new_init_config()
+    # cfg = load_config_from_yaml(cfg_path)
+    # cfg["scorers"] = {scorer: cfg["scorers"].get(scorer, {}) for scorer in scorers_to_process}
     
-    for x in cfg['dependencies']:
-        if x == 'text':
-            import dataflow.Eval.Text
-        elif x == 'image':
-            import dataflow.Eval.image
-        elif x == 'video':
-            import dataflow.Eval.video
-        else:
-            raise ValueError('Please Choose Dependencies in text, image, video!')
+    for file_path in paths_list:
+        output_file = map_output_path(file_path, output_dir)
         
+        # Skip processing if the output file already exists
+        if os.path.exists(output_file):
+            print(f"Skipping {file_path} because the output file already exists.")
+            continue
+        
+        print(f"Processing {file_path} and saving to {output_file}") 
+        dataset_dict = {}
+        score_record = ScoreRecord()        
+        for scorer_name, model_args in cfg["scorers"].items():
+            if "num_workers" in cfg:
+                model_args["num_workers"] = cfg["num_workers"]
+            if "model_cache_path" in cfg:
+                model_args["model_cache_dir"] = cfg["model_cache_path"]
+            os.environ['http_proxy'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+            os.environ['https_proxy'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+            os.environ['HTTP_PROXY'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+            os.environ['HTTPS_PROXY'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+            scorer = new_get_scorer(scorer_name, model_args)
+            cfg['data'][scorer.data_type]['data_path'] = file_path
+            print(f"Processing {file_path}")
+            if scorer.data_type not in dataset_dict:
+                formatter = FORMATTER_REGISTRY.get(cfg['data'][scorer.data_type]['formatter'])(cfg['data'][scorer.data_type])
+                os.environ.pop("http_proxy", None)
+                os.environ.pop("https_proxy", None)
+                os.environ.pop("HTTP_PROXY", None)
+                os.environ.pop("HTTPS_PROXY", None)
+                datasets = formatter.load_dataset()
+                os.environ['http_proxy'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+                os.environ['https_proxy'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+                os.environ['HTTP_PROXY'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+                os.environ['HTTPS_PROXY'] = 'http://baitianyi:TwYpCc0xCLDfvXwaAFlEX8MXJeKw2RXUf6RpREQ16qC7vaopXs4zfl4xCmGh@10.1.20.51:23128/'
+                dataset_dict[scorer.data_type] = datasets
+                dataset = datasets[0] if type(datasets) == tuple else datasets
+                dataset.set_score_record(score_record)
+            else:
+                datasets = dataset_dict[scorer.data_type]
+            print("scoring datasets")
+            
+            _, score = scorer(datasets)        
 
-    dataset_dict = {}
-    score_record = ScoreRecord()
-    for scorer_name, model_args in cfg.scorers.items():
-        if "num_workers" in cfg:
-            model_args["num_workers"] = cfg.num_workers
-        if "model_cache_path" in cfg:
-            model_args["model_cache_dir"] = cfg.model_cache_path
-        scorer = new_get_scorer(scorer_name, model_args)
-        if scorer.data_type not in dataset_dict:
-            formatter = FORMATTER_REGISTRY.get(cfg['data'][scorer.data_type]['formatter'])(cfg['data'][scorer.data_type])
-            datasets = formatter.load_dataset()
-            dataset_dict[scorer.data_type] = datasets
-            dataset = datasets[0] if type(datasets) == tuple else datasets
-            dataset.set_score_record(score_record)
-        else:
-            datasets = dataset_dict[scorer.data_type]
-        _, score = scorer(datasets)
-    score_record.dump_scores(save_path)
-
+        score_record.dump_scores(output_file)

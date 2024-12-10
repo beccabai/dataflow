@@ -34,4 +34,4 @@ class RMScorer(TextScorer):
         if scores.ndim == 0:  
             scores = [float(scores)]
 
-        return scores.tolist() 
+        return scores

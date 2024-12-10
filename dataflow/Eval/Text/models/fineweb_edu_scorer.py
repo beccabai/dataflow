@@ -2,6 +2,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from dataflow.core import TextScorer
 from dataflow.utils.registry import MODEL_REGISTRY
+from datasets import Dataset
 # FineWeb-Edu quality classifier (Huggingface)
 # cited from: The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale
 @MODEL_REGISTRY.register()
@@ -18,6 +19,8 @@ class FineWebEduScorer(TextScorer):
         self.score_type = float
         self.data_type = 'text'
         self.score_name = 'FineWebEduScore'
+        self.num_workers = args_dict.get('num_workers', 1)
+        
 
     def evaluate_batch(self, batch) -> list:
         input_texts = next(iter(batch.values()))
@@ -30,4 +33,3 @@ class FineWebEduScorer(TextScorer):
         results = logits.tolist()
 
         return results
-

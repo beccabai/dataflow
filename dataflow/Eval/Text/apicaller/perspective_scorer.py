@@ -1,6 +1,8 @@
 from googleapiclient import discovery
 from dataflow.core import TextScorer
 from dataflow.utils.registry import MODEL_REGISTRY
+import time
+from googleapiclient.errors import HttpError
 
 # PerspectiveAPI toxicity evaluationß
 @MODEL_REGISTRY.register()
@@ -24,13 +26,40 @@ class PerspectiveScorer(TextScorer):
         self.data_type = 'text'
         self.score_name = 'PerspectiveScore' 
 
+    # def analyze_toxicity(self, text):
+    #     analyze_request = {
+    #         'comment': {'text': text},
+    #         'requestedAttributes': {'TOXICITY': {}}
+    #     }
+    #     response = self.client.comments().analyze(body=analyze_request).execute()
+    #     return response['attributeScores']['TOXICITY']['spanScores'][0]['score']['value']
+    
     def analyze_toxicity(self, text):
+        if not text.strip():
+            print(f"Warning: Empty text found! Skipping analysis for: {text}")
+            return None  # Or handle it as needed, such as returning a default score
         analyze_request = {
             'comment': {'text': text},
             'requestedAttributes': {'TOXICITY': {}}
         }
-        response = self.client.comments().analyze(body=analyze_request).execute()
-        return response['attributeScores']['TOXICITY']['spanScores'][0]['score']['value']
+        while True:
+            try:
+                # Send request to Perspective API
+                response = self.client.comments().analyze(body=analyze_request).execute()
+                
+                # Return the toxicity score
+                return response['attributeScores']['TOXICITY']['spanScores'][0]['score']['value']
+            
+            except HttpError as e:
+                # Check if it's a 429 rate limit error
+                if e.resp.status == 429:
+                    print("Rate limit exceeded. Retrying after a delay...")
+                    time.sleep(60)  # Wait for 1 minute before retrying
+                elif "LANGUAGE_NOT_SUPPORTED_BY_ATTRIBUTE" in e.content.decode('utf-8'):
+                    return None
+                else:
+                    # If it's another type of error, raise it
+                    raise e
 
     def evaluate_batch(self, batch):
         results = []
@@ -41,7 +70,9 @@ class PerspectiveScorer(TextScorer):
             max_bytes = 20480  
             
             if len(text.encode('utf-8')) > max_bytes:
-                score = None
+                # score = None
+                truncated_text = text.encode('utf-8')[:max_bytes].decode('utf-8', 'ignore')
+                score = self.analyze_toxicity(truncated_text)
             else:
                 score = self.analyze_toxicity(text)
 

@@ -3,9 +3,12 @@ import numpy as np
 import torch
 import json
 from dataflow.data import DataFlowDataset, ImageCaptionDataset, ImageDataset, PureVideoDataset, TextDataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from dataflow.utils import recursive_len, recursive_idx, recursive_insert, recursive_func, round_to_sigfigs, recursive
 from functools import partial
+import ray
+import math
+import os
 
 class ScoreRecord():
     
@@ -79,6 +82,9 @@ class TextScorer(Scorer):
         super().__init__()
         self.batch_size = args_dict.get('batch_size')
         self.num_workers = args_dict.get('num_workers', 0)
+        # self.num_splits = args_dict.get('num_splits', 4)
+        # self.num_cpus_per_task = args_dict.get('num_cpus_per_task', 8)
+        # self.num_gpus_per_task = args_dict.get('num_gpus_per_task', 1)
 
     def init_score(self, len_dataset, dtype=float):
         if dtype == float:
@@ -87,10 +93,115 @@ class TextScorer(Scorer):
             return {'Default': [''] * len_dataset} 
         else:
             raise ValueError("Unsupported dtype for init_score")
-
+        
     def evaluate_batch(self, batch):
         raise NotImplementedError
+    
+    
 
+    # def create_split_dataloaders(self, dataset, batch_size, num_splits):
+    #     """Create num_splits DataLoaders"""
+    #     split_size = len(dataset) // num_splits
+    #     remainder = len(dataset) % num_splits
+    #     split_indices = [list(range(i * split_size + min(i, remainder), (i + 1) * split_size + min(i + 1, remainder))) for i in range(num_splits)]
+        
+    #     split_dataloaders = []
+    #     for split in split_indices:
+    #         sampler = SubsetRandomSampler(split)
+    #         split_dataloaders.append(DataLoader(dataset, batch_size=batch_size, sampler=sampler, shuffle=False, num_workers=self.num_workers))        
+        
+    #     return split_dataloaders
+        
+    # def evaluate(self, dataset: TextDataset):
+    #     if self.batch_size == -1:
+    #         self.batch_size = len(dataset)
+
+    #     if not getattr(self, 'use_meta', False) and self.score_name not in dataset.score_record.item_score:
+    #         dataset.score_record.item_score[self.score_name] = self.init_score(len(dataset), self.score_type)
+
+    #     split_dataloaders = self.create_split_dataloaders(dataset, batch_size=self.batch_size, num_splits=self.num_splits)
+    #     ray.init()
+
+    #     # Define the remote function for evaluating a split
+    #     @ray.remote(num_cpus=self.num_cpus_per_task, num_gpus=self.num_gpus_per_task, max_retries=1, retry_exceptions=True)
+    #     def evaluate_split_remote(evaluate_batch_fn, dataloader, split_idx, score_name, dataset_keys):
+    #         """Evaluate batch data using a remote function with minimal capture scope."""
+    #         results = []
+
+    #         for idx, batch in enumerate(tqdm(dataloader, desc=f"Evaluating split {split_idx} - {score_name}", total=len(dataloader))):
+    #             if isinstance(dataset_keys, list):
+    #                 data_to_score = {key: batch[key] for key in dataset_keys}
+    #             else:
+    #                 data_to_score = {dataset_keys: batch[dataset_keys]}
+    #             results.append(evaluate_batch_fn(data_to_score))
+
+    #         return results
+
+    #     # Store the dataloaders in Ray's object store to avoid passing large objects directly
+    #     dataloader_refs = [ray.put(dataloader) for dataloader in split_dataloaders]
+
+    #     results = []
+    #     for split_idx, dataloader_ref in enumerate(dataloader_refs):
+    #         print(f"Submitting split {split_idx} to remote execution")
+
+    #         # Submit the remote task with dataloader reference
+    #         result = evaluate_split_remote.remote(
+    #             self.evaluate_batch, dataloader_ref, split_idx, self.score_name, dataset.keys
+    #         )
+    #         results.append((split_idx, result))
+        
+    #     split_size = len(dataset) // self.num_splits
+    #     remainder = len(dataset) % self.num_splits
+        
+    #     for split_idx, remote_result in results:
+    #         scores_list = ray.get(remote_result)
+            
+    #         split_start = split_idx * split_size + min(split_idx, remainder)
+    #         split_end = split_start + split_size + (1 if split_idx < remainder else 0)
+
+    #         for batch_idx, scores in enumerate(scores_list):
+    #             idx_start = split_start + batch_idx * self.batch_size
+    #             idx_end = min(idx_start + self.batch_size, split_end)
+    #             idx_list = list(range(idx_start, idx_end))
+                
+    #             if getattr(self, 'use_meta', False):
+    #                 dataset.score_record.meta_score[self.score_name] = scores
+    #                 continue
+
+    #             if isinstance(scores, dict):
+    #                 for k, v in scores.items():
+    #                     if k not in dataset.score_record.item_score[self.score_name]:
+    #                         dataset.score_record.item_score[self.score_name][k] = np.full(len(dataset), np.nan)
+
+    #                     if isinstance(v, torch.Tensor):
+    #                         v = v.cpu().detach().numpy()
+
+    #                     for i, idx_val in enumerate(idx_list):
+    #                         dataset.score_record.item_score[self.score_name][k][idx_val] = v[i]
+
+    #                 if 'Default' in dataset.score_record.item_score[self.score_name]:
+    #                     default_scores = dataset.score_record.item_score[self.score_name]['Default']
+    #                     if np.isnan(default_scores).all():
+    #                         del dataset.score_record.item_score[self.score_name]['Default']
+
+    #             elif isinstance(scores, list) or isinstance(scores, np.ndarray):
+    #                 for i, idx_val in enumerate(idx_list):
+    #                     dataset.score_record.item_score[self.score_name]['Default'][idx_val] = scores[i]
+
+    #             elif isinstance(scores, torch.Tensor):
+    #                 scores = scores.cpu().detach().numpy()
+    #                 for i, idx_val in enumerate(idx_list):
+    #                     dataset.score_record.item_score[self.score_name]['Default'][idx_val] = scores[i]
+    #             else:
+    #                 raise ValueError(f"Invalid scores type {type(scores)} returned by {self.score_name}")
+
+    #     ray.shutdown()
+
+    #     if getattr(self, 'use_meta', False):
+    #         return self.scorer_name, dataset.score_record.meta_score[self.score_name]
+    #     else:
+    #         return self.scorer_name, dataset.score_record.item_score[self.score_name]
+    
     def evaluate(self, dataset: TextDataset):
         if self.batch_size == -1:
             self.batch_size = len(dataset)
@@ -129,7 +240,7 @@ class TextScorer(Scorer):
                     if np.isnan(default_scores).all():
                         del dataset.score_record.item_score[self.score_name]['Default']
 
-            elif isinstance(scores, list):
+            elif isinstance(scores, list) or isinstance(scores, np.ndarray):
                 for i, idx_val in enumerate(idx_list):
                     dataset.score_record.item_score[self.score_name]['Default'][idx_val] = scores[i]
             elif isinstance(scores, torch.Tensor):

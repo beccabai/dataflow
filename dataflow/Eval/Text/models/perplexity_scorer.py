@@ -13,7 +13,8 @@ class PerplexityScorer(TextScorer):
         self.score_type = float
         self.data_type = 'text'
         self.score_name = 'PerplexityScore'
-        self.model = KenlmModel.from_pretrained(self.model_path, self.language)
+        # self.model = KenlmModel.from_pretrained(self.model_path, self.language)
+        self.model = KenlmModel.from_pretrained('/mnt/petrelfs/baitianyi/eval/Open-DataFlow-Eval/dataflow/Eval/Text/models/Kenlm/wikipedia', self.language)
 
     def evaluate_batch(self, batch):
         input_texts = next(iter(batch.values()))

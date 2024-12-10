@@ -129,10 +129,18 @@ class ModelAnnotator:
 
         for i, label in enumerate(self.labels):
             output[f"{label}_chunks"] = chunk_scores[i]
-            output[f"{label}_average"] = [
-                np.average(scores, weights=token_counts).item()
-                for scores, token_counts in zip(chunk_scores[i], chunk_token_counts)
-            ]
+            # output[f"{label}_average"] = [
+            #     np.average(scores, weights=token_counts).item()
+            #     for scores, token_counts in zip(chunk_scores[i], chunk_token_counts)
+            # ]
+            try:
+                output[f"{label}_average"] = [
+                    np.average(scores, weights=token_counts).item()
+                    for scores, token_counts in zip(chunk_scores[i], chunk_token_counts)
+                ]
+            except ZeroDivisionError as e:
+                print(f"Error processing label {label}: {e}")
+                output[f"{label}_average"] = [np.nan] * len(chunk_scores[i])
 
         return output
 

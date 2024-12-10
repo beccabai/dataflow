@@ -5,7 +5,7 @@ from presidio_analyzer.nlp_engine import TransformersNlpEngine
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 import warnings
 
-# Presidio PII detection Scorer
+# Presidio PII detection Scorer with device support
 @MODEL_REGISTRY.register()
 class PresidioScorer(TextScorer):
     def __init__(self, args_dict):
@@ -36,6 +36,7 @@ class PresidioScorer(TextScorer):
 
     def evaluate_batch(self, batch):
         input_texts = next(iter(batch.values()))
+        input_texts = [str(text) for text in input_texts]
 
         results = []
         for text in input_texts:

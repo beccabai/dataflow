@@ -11,8 +11,9 @@ from dataflow.utils.registry import MODEL_REGISTRY
 class TextbookScorer(TextScorer):
     def __init__(self, args_dict):
         super().__init__(args_dict)
-        model_path = hf_hub_download(args_dict.get('model_repo'), args_dict.get('model_file'))
-        self.model = fasttext.load_model(model_path)
+        # model_path = hf_hub_download(args_dict.get('model_repo'), args_dict.get('model_file'))
+        # self.model = fasttext.load_model(model_path)
+        self.args_dict = args_dict
         self.batch_size = args_dict.get('batch_size') 
         self.score_type = float
         self.data_type = 'text'  
@@ -28,8 +29,15 @@ class TextbookScorer(TextScorer):
     @staticmethod
     def replace_newlines(text: str) -> str:
         return re.sub("\n+", " ", text)
+    
+    def load_model_if_needed(self):
+        """Load the model only if it has not been loaded"""
+        if not hasattr(self, 'model'):
+            model_path = hf_hub_download(self.args_dict.get('model_repo'), self.args_dict.get('model_file'))
+            self.model = fasttext.load_model(model_path)
 
     def evaluate_batch(self, batch) -> List[float]:
+        self.load_model_if_needed()        
         text_list = next(iter(batch.values()))
         text_list = [self.replace_newlines(text) for text in text_list]
         pred = self.model.predict(text_list, k=-1)
@@ -39,5 +47,5 @@ class TextbookScorer(TextScorer):
             score = 0
             for label, score_value in zip(labels, scores):
                 score += self.score_dict.get(label, 0) * score_value
-            score_list.append(float(score))
+            score_list.append(float(score))       
         return score_list
